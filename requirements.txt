@@ -1,0 +1,8 @@
+torch
+numpy
+Pillow
+paho-mqtt
+diffusers
+transformers
+onnx
+onnxruntime
