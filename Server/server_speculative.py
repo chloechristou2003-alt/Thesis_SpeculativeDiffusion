@@ -1,26 +1,26 @@
 """
 server_speculative.py
 ---------------------
-Speculative Diffusion Server — Doubly Adaptive Thresholding.
+Speculative Diffusion Server -- Doubly Adaptive Thresholding.
 
-Ρόλος:
-  Λαμβάνει draft trajectories από το Android (μέσω MQTT),
-  τις επαληθεύει με τον target UNet (SD 1.5),
-  και επιστρέφει: nAccepted + corrected target state.
+Role:
+  Receives draft trajectories from Android (over MQTT),
+  verifies them with the target UNet (SD 1.5),
+  and returns: nAccepted + corrected target state.
 
 MQTT Topics (prefix: speculative/session_2026):
-  → embeddings_request:  Android ζητά CLIP embeddings
-  ← embeddings_response: Server στέλνει [uncond, cond] embeddings
-  → verify_request:      Android στέλνει draft trajectory [s0..sK]
-  ← verify_response:     Server στέλνει nAccepted + corrected state
-  ← verify_error:        Server στέλνει error message
-  → decode_request:      Android ζητά VAE decode latents → PNG
-  ← decoded:             Server στέλνει PNG bytes
+  -> embeddings_request:  Android requests CLIP embeddings
+  <- embeddings_response: Server sends [uncond, cond] embeddings
+  -> verify_request:      Android sends draft trajectory [s0..sK]
+  <- verify_response:     Server sends nAccepted + corrected state
+  <- verify_error:        Server sends an error message
+  -> decode_request:      Android requests VAE decode latents -> PNG
+  <- decoded:             Server sends PNG bytes
 
 Doubly Adaptive Thresholding:
   tau_t = tau_base + gamma * C_t^3
-  tau_base: από Android (ACCEPT_THRESHOLD = 0.20)
-  gamma:    0.30 → tau αυξάνει προοδευτικά (αυστηρό αρχή, χαλαρό τέλος)
+  tau_base: from Android (ACCEPT_THRESHOLD = 0.20)
+  gamma:    0.30 -> tau increases progressively (strict start, loose end)
   C_t:      progress^3 (cubic schedule)
 """
 
@@ -40,21 +40,21 @@ logger = logging.getLogger(__name__)
 
 
 def _p(*args, **kwargs):
-    """Print με flush=True για άμεση εμφάνιση στο Kaggle output."""
+    """Print with flush=True for immediate display in the Kaggle output."""
     kwargs.setdefault("flush", True)
     print(*args, **kwargs)
 
 # SpeculativeServer
-# Κεντρική κλάση του server. Ένα instance ανά Kaggle session.
+# Central server class. One instance per Kaggle session.
 #
 # Lifecycle:
-#   1. __init__: φορτώνει ModelLoader + target UNet
-#   2. start_mqtt: συνδέεται στο broker και αρχίζει loop
-#   3. on_message: router για embeddings/verify/decode requests
-#   4. stop: αποσύνδεση και εκτύπωση metrics summary
+#   1. __init__: loads ModelLoader + target UNet
+#   2. start_mqtt: connects to the broker and starts the loop
+#   3. on_message: router for embeddings/verify/decode requests
+#   4. stop: disconnect and print the metrics summary
 #
-# _running_instances: class-level list για cleanup προηγούμενων instances
-# (αποτρέπει connections αν ξανατρέξεις το cell)
+# _running_instances: class-level list for cleaning up prior instances
+# (prevents duplicate connections if you re-run the cell)
 
 class SpeculativeServer:
     _running_instances: list = []
@@ -66,7 +66,7 @@ class SpeculativeServer:
         broker: str = "broker.hivemq.com",
         session: str = "session_2026",
     ):
-        # Cleanup προηγούμενων instances (αν ξανατρέξεις το notebook cell)
+        # Cleanup of prior instances (if you re-run the notebook cell)
         for prior in list(SpeculativeServer._running_instances):
             try:
                 prior.stop(quiet=True)
@@ -82,7 +82,7 @@ class SpeculativeServer:
         self._stopped  = False
         self._pending_verify_req_id: int = -1
 
-        # MQTT topics — πρέπει να ταιριάζουν ακριβώς με το Android
+        # MQTT topics -- must match the Android side exactly
         prefix = f"speculative/{session}"
         self.topic_embeddings_req = f"{prefix}/embeddings_request"
         self.topic_embeddings_res = f"{prefix}/embeddings_response"
@@ -92,11 +92,11 @@ class SpeculativeServer:
         self.topic_decode_req     = f"{prefix}/decode_request"
         self.topic_decoded        = f"{prefix}/decoded"
 
-        # Φόρτωση target UNet
+        # Load the target UNet
         self.model_loader = ModelLoader(model_id=self.target_id, device=self.device)
         self.model_loader.load_unet(self.target_id, label="Target UNet")
 
-        # Metrics για monitoring της session
+        # Metrics for monitoring the session
         self.metrics = {
             "verify_calls":        0,
             "total_K":             0,
@@ -110,16 +110,16 @@ class SpeculativeServer:
         }
 
         # Doubly Adaptive: tau_t = tau_base + gamma * C_t^3
-        # gamma=0.30 → tau αυξάνει κατά 30% στο τέλος της generation
-        # Αποτέλεσμα: αυστηρός έλεγχος αρχή (ακρίβεια), χαλαρός τέλος (ταχύτητα)
+        # gamma=0.30 -> tau increases by 30% toward the end of generation
+        # Result: strict check early (accuracy), loose late (speed)
         self.gamma              = 0.30
-        self.threshold_override = None  # Override για debugging (None = κανονική λειτουργία)
+        self.threshold_override = None  # Override for debugging (None = normal operation)
 
         self.client = None
         _p(f"[SpecServer] Ready on {self.device} | session={session} | target={target_id}")
 
-    # _sanitize_error — Καθαρίζει error messages πριν σταλούν στο Android
-    # Αποκόπτει στα max_len chars για να χωράει στο MQTT payload
+    # _sanitize_error -- Cleans error messages before sending them to Android
+    # Truncates at max_len chars so it fits in the MQTT payload
 
     @staticmethod
     def _sanitize_error(exc: Exception, max_len: int = 200) -> str:
@@ -128,8 +128,8 @@ class SpeculativeServer:
             msg = msg[:max_len] + "..."
         return f"{type(exc).__name__}: {msg}"
 
-    # parse_verify_request — Αποκωδικοποιεί binary verify request
-    # Πρέπει να ταιριάζει με encodeVerifyRequest() Android
+    # parse_verify_request -- Decodes the binary verify request
+    # Must match encodeVerifyRequest() on Android
     #
     # Format (big-endian):
     #   [4]  req_id
@@ -142,7 +142,7 @@ class SpeculativeServer:
     #   [4f] accept_threshold
     #   [8]  seed
     #   [4]  c, [4] h, [4] w
-    #   [(K+1)×c×h×w × 4f] states trajectory
+    #   [(K+1)xcxhxw x 4f] states trajectory
 
     def parse_verify_request(self, payload: bytes) -> dict:
         f = io.BytesIO(payload)
@@ -179,11 +179,11 @@ class SpeculativeServer:
             "c": c, "h": h, "w": w, "states": states_tensor,
         }
 
-    # parse_decode_request — Αποκωδικοποιεί binary decode request
-    # Πρέπει να ταιριάζει με encodeDecodeRequest() Android
+    # parse_decode_request -- Decodes the binary decode request
+    # Must match encodeDecodeRequest() on Android
     #
-    # Format: [4 req_id][4 c][4 h][4 w][c×h×w × 4f latents]
-    
+    # Format: [4 req_id][4 c][4 h][4 w][cxhxw x 4f latents]
+
     def parse_decode_request(self, payload: bytes) -> tuple:
         f = io.BytesIO(payload)
         req_id = struct.unpack(">i", f.read(4))[0]
@@ -196,8 +196,8 @@ class SpeculativeServer:
         ).reshape(1, c, h, w)
         return req_id, torch.from_numpy(latents_array).to(self.device)
 
-    # encode_verify_response — Κωδικοποιεί verify response σε binary
-    # Πρέπει να ταιριάζει με parseVerifyResponse() Android
+    # encode_verify_response -- Encodes the verify response to binary
+    # Must match parseVerifyResponse() on Android
     #
     # Format: [4 req_id][4 nAccepted][4 c][4 h][4 w][state floats]
     #         [4 n][cos_sims][4 n][rel_l2_x][4 n][rel_l2_eps]
@@ -218,7 +218,7 @@ class SpeculativeServer:
         buf.write(struct.pack(">i", w))
         buf.write(corrected_state[0].detach().cpu().numpy().astype(">f4").tobytes())
 
-        # Metrics για debugging στο Android logcat
+        # Metrics for debugging in the Android logcat
         for key in ("cos_sims", "rel_l2_x", "rel_l2_eps"):
             arr = metrics[key]
             buf.write(struct.pack(">i", len(arr)))
@@ -227,13 +227,13 @@ class SpeculativeServer:
 
         return buf.getvalue()
 
-    # start_mqtt — Συνδέεται στο broker και ξεκινά το message loop
+    # start_mqtt -- Connects to the broker and starts the message loop
     #
-    # blocking=True:  loop_forever() — για production (blocking cell)
-    # blocking=False: loop_start()   — για Jupyter (non-blocking)
+    # blocking=True:  loop_forever() -- for production (blocking cell)
+    # blocking=False: loop_start()   -- for Jupyter (non-blocking)
     #
-    # on_disconnect: automatic reconnect μέσω reconnect_delay_set
-    
+    # on_disconnect: automatic reconnect via reconnect_delay_set
+
     def start_mqtt(self, blocking: bool = True) -> None:
         def on_message(client, userdata, message):
             if self._stopped:
@@ -273,9 +273,9 @@ class SpeculativeServer:
         else:
             self.client.loop_start()
 
-    # stop — Αποσυνδέεται και εκτυπώνει metrics summary
-    # quiet=True: χωρίς summary (για internal cleanup)
-    
+    # stop -- Disconnects and prints the metrics summary
+    # quiet=True: no summary (for internal cleanup)
+
     def stop(self, quiet: bool = False) -> None:
         self._stopped = True
         if self.client:
@@ -292,14 +292,14 @@ class SpeculativeServer:
         if not quiet:
             self.print_metrics_summary()
 
-    # _handle_embeddings — Κωδικοποιεί prompt με CLIP και στέλνει πίσω
+    # _handle_embeddings -- Encodes the prompt with CLIP and sends it back
     #
-    # Χρησιμοποιεί cache (_ensure_text_embeddings) — αν το ίδιο prompt
-    # ξαναζητηθεί, επιστρέφει cached αποτέλεσμα χωρίς inference.
+    # Uses a cache (_ensure_text_embeddings) -- if the same prompt is
+    # requested again, it returns the cached result without inference.
     #
     # Response format: [4 req_id][4 batch][4 tokens][4 dim][floats]
     #   batch=2 (uncond + cond), tokens=77, dim=768
-    
+
     def _handle_embeddings(self, client, payload: bytes) -> None:
         t_start = time.perf_counter()
         f = io.BytesIO(payload)
@@ -315,10 +315,10 @@ class SpeculativeServer:
         neg             = read_utf(f)
         requested_model = read_utf(f)
 
-        # Warning αν το Android ζητά διαφορετικό model (δεν αλλάζει model δυναμικά)
+        # Warning if Android requests a different model (model is not swapped dynamically)
         if requested_model and requested_model != self.target_id:
-            _p(f"[SpecServer] ⚠ Client ζήτησε model={requested_model} "
-               f"αλλά server τρέχει {self.target_id}")
+            _p(f"[SpecServer] WARNING: Client requested model={requested_model} "
+               f"but the server is running {self.target_id}")
 
         _p(f"[SpecServer] EMBEDDINGS REQ #{req_id} | Prompt: {prompt[:40]}...")
 
@@ -338,16 +338,16 @@ class SpeculativeServer:
         self.metrics["embedding_latency_ms"].append(elapsed_ms)
         _p(f"[SpecServer] EMBEDDINGS DONE #{req_id} | {elapsed_ms:.1f}ms")
 
-    # _handle_verify — Κεντρικός handler verification
+    # _handle_verify -- Core verification handler
     #
     # 1. Parse request (trajectory + metadata)
-    # 2. Υπολογισμός Doubly Adaptive threshold:
+    # 2. Compute the Doubly Adaptive threshold:
     #      tau_t = tau_base + gamma * progress^3
     # 3. verify_chunk: batched forward pass + prefix acceptance
-    # 4. Encode + publish response
-    # 5. Αν error: publish verify_error με sanitized message
+    # 4. Encode + publish the response
+    # 5. On error: publish verify_error with a sanitized message
     #
-    # Reset metrics στο πρώτο chunk κάθε generation (start_step_index==0)
+    # Reset metrics on the first chunk of each generation (start_step_index==0)
 
     def _handle_verify(self, client, payload: bytes) -> None:
         t_start = time.perf_counter()
@@ -358,7 +358,7 @@ class SpeculativeServer:
 
             self._pending_verify_req_id = req_id
 
-            # Reset metrics στην αρχή νέας generation
+            # Reset metrics at the start of a new generation
             if req["start_step_index"] == 0:
                 self.metrics["verify_calls"]    = 0
                 self.metrics["total_K"]         = 0
@@ -367,15 +367,15 @@ class SpeculativeServer:
                 self.metrics["all_cos_sims"].clear()
                 self.metrics["all_rel_l2_x"].clear()
                 self.metrics["all_rel_l2_eps"].clear()
-                _p(f"[SpecServer] ── NEW GENERATION (seed={req['seed']}) ──")
+                _p(f"[SpecServer] -- NEW GENERATION (seed={req['seed']}) --")
 
             # Doubly Adaptive Threshold
-            tau_base = req["threshold"]                               # 0.20 από Android
+            tau_base = req["threshold"]                               # 0.20 from Android
             progress = req["start_step_index"] / max(1, req["total_steps"])
             C_t      = progress ** 3                                  # cubic schedule
-            tau_t    = tau_base + self.gamma * C_t                   # 0.20 → 0.50 max
+            tau_t    = tau_base + self.gamma * C_t                    # 0.20 -> 0.50 max
 
-            # Override για debugging (threshold_override = None = κανονική λειτουργία)
+            # Override for debugging (threshold_override = None = normal operation)
             if self.threshold_override is not None:
                 tau_t = self.threshold_override
 
@@ -395,13 +395,13 @@ class SpeculativeServer:
                 return "[" + ", ".join(f"{v:.4f}" for v in arr) + "]"
 
             action = ("ACCEPT (all)" if n_accepted == K
-                      else f"PARTIAL {n_accepted}/{K} → fall-forward" if n_accepted > 0
-                      else "REJECT → fall-forward")
+                      else f"PARTIAL {n_accepted}/{K} -> fall-forward" if n_accepted > 0
+                      else "REJECT -> fall-forward")
 
             _p(f"\n[SpecServer] VERIFY #{req_id} | "
                f"step={req['start_step_index']} K={K} | "
                f"C_t={C_t:.3f} tau_t={tau_t:.3f}")
-            _p(f"[SpecServer]   rel_l2_eps={fmt(rel_l2_eps)} → {action}")
+            _p(f"[SpecServer]   rel_l2_eps={fmt(rel_l2_eps)} -> {action}")
 
             response = self.encode_verify_response(req_id, n_accepted, corrected, metrics)
             client.publish(self.topic_verify_res, response, qos=1)
@@ -432,11 +432,11 @@ class SpeculativeServer:
         finally:
             self._pending_verify_req_id = -1
 
-    # _handle_decode — VAE decode latents → PNG → MQTT
+    # _handle_decode -- VAE decode latents -> PNG -> MQTT
     #
     # Response format: [4 req_id][PNG bytes]
-    # PNG επιλέχθηκε αντί JPEG για lossless quality
-    
+    # PNG chosen over JPEG for lossless quality
+
     def _handle_decode(self, client, payload: bytes) -> None:
         t_start         = time.perf_counter()
         req_id, latents = self.parse_decode_request(payload)
@@ -457,9 +457,9 @@ class SpeculativeServer:
         _p(f"[SpecServer] DECODE DONE #{req_id} | {elapsed_ms:.1f}ms")
 
     # _stats / print_metrics_summary
-    # Στατιστικά latency και acceptance rate για κάθε session.
-    # Εκτυπώνεται αυτόματα στο stop() (εκτός αν quiet=True).
-    
+    # Latency and acceptance-rate statistics for each session.
+    # Printed automatically in stop() (unless quiet=True).
+
     @staticmethod
     def _stats(arr_list: list, label: str) -> str:
         if not arr_list:
@@ -492,8 +492,8 @@ class SpeculativeServer:
                f"max={arr.max():.4f}")
 
 
-# Entry point (για εκτέλεση εκτός Jupyter)
-# Για Jupyter: χρησιμοποίησε blocking=False στο start_mqtt
+# Entry point (for running outside Jupyter)
+# For Jupyter: use blocking=False in start_mqtt
 
 if __name__ == "__main__":
     import os
