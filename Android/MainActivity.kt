@@ -24,14 +24,14 @@ import java.util.EnumSet
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-// StatusType — Enum για την κατάσταση του UI
-// Χρησιμοποιείται από το updateStatus() για να αλλάζει χρώμα/spinner
+// StatusType -- Enum for the UI state
+// Used by updateStatus() to change color/spinner
 
 enum class StatusType { IDLE, LOADING, SUCCESS, ERROR }
 
 // EulerScheduler
-// Υπολογίζει sigmas και timesteps για τον Euler Discrete Scheduler.
-// Πρέπει να είναι σε ΑΠΟΛΥΤΟ συγχρονισμό με τον server (model_loader.py):
+// Computes sigmas and timesteps for the Euler Discrete Scheduler.
+// Must be in EXACT synchronization with the server (model_loader.py):
 //   - timestep_spacing = "leading"
 //   - steps_offset = 1
 
@@ -47,7 +47,7 @@ class EulerScheduler(val numSteps: Int) {
         val sqrtStart = Math.sqrt(betaStart.toDouble())
         val sqrtEnd   = Math.sqrt(betaEnd.toDouble())
 
-        // Υπολογισμός cumulative product για όλα τα 1000 training timesteps
+        // Compute the cumulative product over all 1000 training timesteps
         var cumulativeProduct = 1.0
         for (i in 0 until 1000) {
             val frac  = i.toDouble() / 999.0
@@ -57,7 +57,7 @@ class EulerScheduler(val numSteps: Int) {
             sigmasFull[i] = Math.sqrt((1.0 - cumulativeProduct) / cumulativeProduct).toFloat()
         }
 
-        // leading spacing + steps_offset=1 — ίδιο με server
+        // leading spacing + steps_offset=1 -- same as the server
         val stepRatio = 1000 / numSteps
         for (i in 0 until numSteps) {
             timesteps[numSteps - 1 - i] = (i * stepRatio + 1).toLong()
@@ -74,7 +74,7 @@ class EulerScheduler(val numSteps: Int) {
         }
     }
 
-    // Γραμμική παρεμβολή μεταξύ δύο γειτονικών sigmas
+    // Linear interpolation between two neighboring sigmas
     private fun interpolateSigma(t: Double): Float {
         if (t <= 0)   return sigmasFull[0]
         if (t >= 999) return sigmasFull[999]
@@ -95,19 +95,19 @@ class EulerScheduler(val numSteps: Int) {
 }
 
 // VerifyResult
-// Αποτέλεσμα verification από τον server:
-//   accepted: πόσα draft steps έγιναν αποδεκτά (prefix acceptance)
-//   state:    το corrected latent state από τον target UNet
+// Verification result from the server:
+//   accepted: how many draft steps were accepted (prefix acceptance)
+//   state:    the corrected latent state from the target UNet
 
 class VerifyResult(val accepted: Int, val state: FloatArray)
 
-// MainActivity — Speculative Diffusion με σταθερό K
+// MainActivity -- Speculative Diffusion with fixed K
 //
-// Αρχιτεκτονική:
-//   - Draft:  BK-SDM-tiny ONNX (τρέχει τοπικά στο Android)
-//   - Target: SD 1.5 (τρέχει στον Kaggle server μέσω MQTT)
-//   - Verification: batched forward pass του target UNet
-//   - K: σταθερό μέγεθος ομαδοποίησης (CHUNK_SIZE)
+// Architecture:
+//   - Draft:  BK-SDM-tiny ONNX (runs locally on Android)
+//   - Target: SD 1.5 (runs on the Kaggle server over MQTT)
+//   - Verification: batched forward pass of the target UNet
+//   - K: fixed chunk size (CHUNK_SIZE)
 
 class MainActivity : AppCompatActivity() {
 
@@ -119,7 +119,7 @@ class MainActivity : AppCompatActivity() {
     private val sessionTopic = "speculative/session_2026"
 
     companion object {
-        // Latent space dimensions — 64×64 = 512×512px output
+        // Latent space dimensions -- 64x64 = 512x512px output
         private const val LATENT_C    = 4
         private const val LATENT_H    = 32
         private const val LATENT_W    = 32
@@ -127,30 +127,30 @@ class MainActivity : AppCompatActivity() {
         private const val EMBED_SIZE  = 77 * 768                        // CLIP embedding
 
         // Diffusion hyperparameters
-        private const val TOTAL_STEPS = 10      // Συνολικά denoising steps
-        private const val CHUNK_SIZE  = 4       // Σταθερό K — βάσει log analysis
+        private const val TOTAL_STEPS = 10      // Total denoising steps
+        private const val CHUNK_SIZE  = 4       // Fixed K -- based on log analysis
         private const val CFG_SCALE   = 7.5f    // Classifier-Free Guidance scale
-        private const val SEED        = 999L    // Fixed seed για αναπαραγωγιμότητα
+        private const val SEED        = 999L    // Fixed seed for reproducibility
 
-        // Acceptance threshold — σταθερό τ (server: tau = ACCEPT_THRESHOLD)
-        // 0.30 = βέλτιστο για bk-sdm-tiny draft + SD 1.5 target
+        // Acceptance threshold -- fixed tau (server: tau = ACCEPT_THRESHOLD)
+        // 0.30 = optimal for bk-sdm-tiny draft + SD 1.5 target
         private const val ACCEPT_THRESHOLD = 0.30f
 
         // MQTT timeouts
-        private const val VERIFY_TIMEOUT_SEC       = 45L   // Κανονικό verify
-        private const val VERIFY_TIMEOUT_FIRST_SEC = 180L  // Πρώτο verify (server warmup)
+        private const val VERIFY_TIMEOUT_SEC       = 45L   // Normal verify
+        private const val VERIFY_TIMEOUT_FIRST_SEC = 180L  // First verify (server warmup)
         private const val DECODE_TIMEOUT_SEC        = 30L  // VAE decode
 
-        // false = production mode (χωρίς ενδιάμεσα decodes — πολύ πιο γρήγορο)
-        // true  = debug mode (decode μετά από κάθε chunk — πιο αργό)
+        // false = production mode (no intermediate decodes -- much faster)
+        // true  = debug mode (decode after each chunk -- slower)
         private const val VISUALIZE_INTERMEDIATE = true
         private const val VISUALIZE_PAUSE_MS     = 250L
 
-        // Positive suffix: ενθαρρύνει single cohesive scene (αποτρέπει split artifacts)
+        // Positive suffix: encourages a single cohesive scene (prevents split artifacts)
         private const val POSITIVE_SUFFIX = ", single scene, photorealistic, " +
                 "high quality, 4k, natural lighting"
 
-        // Negative prompt: αποτρέπει collage/split/abstract artifacts
+        // Negative prompt: prevents collage/split/abstract artifacts
         private const val DEFAULT_NEG_PROMPT = "multiple horizons, double horizon, " +
                 "split screen, stacked images, double image, two halves, collage, diptych, " +
                 "panel, grid, triptych, composite, montage, " +
@@ -168,7 +168,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var cancelRequested   = false
     @Volatile private var generationThread: Thread? = null
 
-    // Request ID tracking (αποτρέπει stale MQTT responses)
+    // Request ID tracking (prevents stale MQTT responses)
     @Volatile private var pendingEmbeddingsId = -1
     @Volatile private var pendingVerifyId     = -1
     @Volatile private var pendingDecodeId     = -1
@@ -177,33 +177,33 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var pendingDecodeBitmap: android.graphics.Bitmap? = null
     @Volatile private var decodeFailed = false
 
-    // Cache για embeddings (αποφυγή επανακωδικοποίησης ίδιου prompt)
+    // Cache for embeddings (avoids re-encoding the same prompt)
     private var currentServerModel = "stable-diffusion-v1-5/stable-diffusion-v1-5"
     private var lastCacheKey: Triple<String, String, String>? = null
 
-    // Scheduler και metrics
+    // Scheduler and metrics
     private var scheduler: EulerScheduler? = null
     private var totalAccepted = 0
     private var totalK        = 0
     private var generationStartTimeMs = 0L
 
-    // Reusable noise buffers (αποφυγή allocations στο inference loop)
+    // Reusable noise buffers (avoids allocations in the inference loop)
     private val noiseUncondBuffer   = FloatArray(LATENT_SIZE)
     private val noiseCondBuffer     = FloatArray(LATENT_SIZE)
     private val finalNoiseBuffer    = FloatArray(LATENT_SIZE)
     private val scaledLatentsBuffer = FloatArray(LATENT_SIZE)
 
-    // Direct NIO buffers για OnnxTensor (zero-copy)
+    // Direct NIO buffers for OnnxTensor (zero-copy)
     private lateinit var sampleBuffer:      FloatBuffer
     private lateinit var timestepBuffer:    FloatBuffer
     private lateinit var uncondEmbedBuffer: FloatBuffer
     private lateinit var condEmbedBuffer:   FloatBuffer
 
-    // Atomic counter για unique request IDs
+    // Atomic counter for unique request IDs
     private val currentRequestId = java.util.concurrent.atomic.AtomicInteger(0)
 
-    // onCreate — Entry point της εφαρμογής
-    // Αρχικοποιεί ORT, MQTT και button listener
+    // onCreate -- Application entry point
+    // Initializes ORT, MQTT and the button listener
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -211,14 +211,14 @@ class MainActivity : AppCompatActivity() {
 
         ortEnv = OrtEnvironment.getEnvironment()
         initReusableBuffers()
-        // MQTT σε background thread — δεν μπλοκάρει το UI
+        // MQTT on a background thread -- does not block the UI
         Thread { setupMqtt() }.start()
 
         val generateButton = findViewById<Button>(R.id.generateButton)
         val promptInput    = findViewById<EditText>(R.id.promptInput)
 
         generateButton.setOnClickListener {
-            // Αν τρέχει ήδη generation, το button λειτουργεί ως Cancel
+            // If a generation is already running, the button acts as Cancel
             if (isGenerating) {
                 cancelRequested = true
                 updateStatus("Canceling...", StatusType.LOADING)
@@ -237,20 +237,20 @@ class MainActivity : AppCompatActivity() {
             generateButton.text   = "Cancel"
             updateStatus("Starting...", StatusType.LOADING)
 
-            // Κλείσε πληκτρολόγιο
+            // Close the keyboard
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             imm.hideSoftInputFromWindow(promptInput.windowToken, 0)
 
-            // Reset metrics για νέα γενιά
+            // Reset metrics for a new generation
             totalAccepted         = 0
             totalK                = 0
             generationStartTimeMs = System.currentTimeMillis()
 
-            // Ξεκινά το generation σε background thread
+            // Starts the generation on a background thread
             Thread {
                 var generationSucceeded = false
                 try {
-                    // ── ΒΗΜΑ 1: Φόρτωση Draft ONNX (μόνο την πρώτη φορά) ──────
+                    // -- STEP 1: Load the Draft ONNX (only the first time) --------
                     if (unetSession == null) {
                         updateStatus("Loading ONNX Model...", StatusType.LOADING)
                         val unetPath = copyAssetToInternal("draft_unet.onnx")
@@ -261,10 +261,10 @@ class MainActivity : AppCompatActivity() {
                         loadUnetModel(unetPath)
                     }
 
-                    // ΒΗΜΑ 2: Αρχικοποίηση Scheduler
+                    // STEP 2: Initialize the Scheduler
                     if (scheduler == null) scheduler = EulerScheduler(TOTAL_STEPS)
 
-                    // ΒΗΜΑ 3: Αναμονή MQTT σύνδεσης
+                    // STEP 3: Wait for the MQTT connection
                     var waited = 0
                     while (!::mqttClient.isInitialized || !mqttClient.isConnected) {
                         if (waited >= 100) break
@@ -277,9 +277,9 @@ class MainActivity : AppCompatActivity() {
                     val negPrompt  = DEFAULT_NEG_PROMPT
                     val currentKey = Triple(prompt, negPrompt, currentServerModel)
 
-                    // ΒΗΜΑ 4: Text Embeddings (server-side CLIP, cached)
-                    // Ο server κωδικοποιεί το prompt με CLIP και επιστρέφει
-                    // [uncond_emb, cond_emb] — cached αν το ίδιο prompt ξαναχρησιμοποιηθεί
+                    // STEP 4: Text Embeddings (server-side CLIP, cached)
+                    // The server encodes the prompt with CLIP and returns
+                    // [uncond_emb, cond_emb] -- cached if the same prompt is reused
                     if (lastCacheKey != currentKey) {
                         updateStatus("Downloading Embeddings...", StatusType.LOADING)
                         embeddingsReady     = false
@@ -299,33 +299,33 @@ class MainActivity : AppCompatActivity() {
                     }
                     if (cancelRequested) throw InterruptedException("User cancelled")
 
-                    // ΒΗΜΑ 5: Αρχικοποίηση Latents
-                    // Τυχαίος Gaussian θόρυβος, scaled με initNoiseSigma
+                    // STEP 5: Initialize the Latents
+                    // Random Gaussian noise, scaled by initNoiseSigma
                     var currentLatents = createRandomLatents(scheduler!!)
                     var nextLatents    = FloatArray(LATENT_SIZE)
 
-                    // Pool για αποθήκευση trajectory: [s0, s1, ..., sK]
-                    // Μέγεθος CHUNK_SIZE+1 = 5 (αρκεί για K έως 4)
+                    // Pool for storing the trajectory: [s0, s1, ..., sK]
+                    // Size CHUNK_SIZE+1 = 5 (enough for K up to 4)
                     val trajectoryPool = Array(CHUNK_SIZE + 1) { FloatArray(LATENT_SIZE) }
 
                     var stepIndex = 0
 
-                    // ΚΥΡΙΟΣ ΒΡΟΧΟΣ — Speculative Diffusion με σταθερό K
+                    // MAIN LOOP -- Speculative Diffusion with fixed K
                     //
-                    // Λογική:
-                    //   1. Ορίζει σταθερό K = CHUNK_SIZE
-                    //   2. Draft: τρέχει K steps τοπικά με ONNX
-                    //   3. Verify: στέλνει trajectory στον server για έλεγχο
-                    //   4. Server επιστρέφει nAccepted + corrected state
-                    //   5. stepIndex += nAccepted + (0 ή 1 για το fall-forward)
+                    // Logic:
+                    //   1. Sets a fixed K = CHUNK_SIZE
+                    //   2. Draft: runs K steps locally with ONNX
+                    //   3. Verify: sends the trajectory to the server for checking
+                    //   4. Server returns nAccepted + corrected state
+                    //   5. stepIndex += nAccepted + (0 or 1 for the fall-forward)
 
                     while (stepIndex < TOTAL_STEPS) {
 
-                        // Σταθερό μέγεθος ομαδοποίησης K = CHUNK_SIZE (= 4)
+                        // Fixed chunk size K = CHUNK_SIZE (= 4)
                         val K = CHUNK_SIZE.coerceAtMost(TOTAL_STEPS - stepIndex)
                         if (K <= 0) break
 
-                        // Αρχή pool: αποθήκευσε το τρέχον state (s0)
+                        // Start of the pool: store the current state (s0)
                         var poolCount = 0
                         System.arraycopy(currentLatents, 0, trajectoryPool[poolCount++], 0, LATENT_SIZE)
 
@@ -335,9 +335,9 @@ class MainActivity : AppCompatActivity() {
                         )
                         if (!embeddingsReady) throw RuntimeException("Missing embeddings")
 
-                        // ΒΗΜΑ 6: Draft Inference (τοπικά με ONNX)
-                        // Τρέχει K forward passes του draft UNet
-                        // Αποθηκεύει κάθε intermediate state στο trajectoryPool
+                        // STEP 6: Draft Inference (locally with ONNX)
+                        // Runs K forward passes of the draft UNet
+                        // Stores each intermediate state in trajectoryPool
                         for (j in 0 until K) {
                             if (cancelRequested) throw InterruptedException("User cancelled")
                             val noise = runUnetInference(currentLatents, stepIndex + j, scheduler!!)
@@ -348,10 +348,10 @@ class MainActivity : AppCompatActivity() {
 
                         if (cancelRequested) throw InterruptedException("User cancelled")
 
-                        // ΒΗΜΑ 7: Verification (server)
-                        // Στέλνει [s0, s1, ..., sK] στον server
-                        // Server τρέχει batched forward pass του SD 1.5 target
-                        // Επιστρέφει nAccepted (prefix) + corrected target state
+                        // STEP 7: Verification (server)
+                        // Sends [s0, s1, ..., sK] to the server
+                        // The server runs a batched forward pass of the SD 1.5 target
+                        // Returns nAccepted (prefix) + corrected target state
                         val myReqId = currentRequestId.incrementAndGet()
                         pendingVerifyId    = myReqId
                         verifyResult       = null
@@ -394,11 +394,11 @@ class MainActivity : AppCompatActivity() {
                             Log.d("METRICS", "step=$stepIndex K=$K acc=$nAccepted")
                         }
 
-                        // Fall-forward: Χρησιμοποιούμε target state (ποτέ raw draft)
+                        // Fall-forward: we use the target state (never a raw draft)
                         System.arraycopy(corrected, 0, currentLatents, 0, LATENT_SIZE)
 
-                        // Αν accepted == K → όλα σωστά, πήγαμε K steps μπροστά
-                        // Αν accepted < K  → rejected στο step nAccepted, + 1 για το fall-forward
+                        // If accepted == K -> all correct, we advanced K steps
+                        // If accepted < K  -> rejected at step nAccepted, + 1 for the fall-forward
                         stepIndex += if (nAccepted == K) K else nAccepted + 1
 
                         // Debug visualization
@@ -412,8 +412,8 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
 
-                    // ΒΗΜΑ 8: Final Decode
-                    // Στέλνει τα τελικά latents στον server για VAE decode → PNG
+                    // STEP 8: Final Decode
+                    // Sends the final latents to the server for VAE decode -> PNG
                     if (!cancelRequested) {
                         updateStatus("Decoding Final Image...", StatusType.LOADING)
                         val finalBmp = requestDecodeAndWait(currentLatents, timeoutSec = 60L)
@@ -449,8 +449,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // updateStatus — Ενημερώνει το status TextView και τον spinner
-    // Τρέχει πάντα στο UI thread μέσω runOnUiThread
+    // updateStatus -- Updates the status TextView and the spinner
+    // Always runs on the UI thread via runOnUiThread
 
     private fun updateStatus(message: String, type: StatusType = StatusType.IDLE) {
         runOnUiThread {
@@ -479,7 +479,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // hideLoadingSpinner — Κρύβει spinner, δείχνει checkmark αν επιτυχία
+    // hideLoadingSpinner -- Hides the spinner, shows a checkmark on success
 
     private fun hideLoadingSpinner(showCheck: Boolean) {
         runOnUiThread {
@@ -489,9 +489,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // requestDecodeAndWait — Στέλνει latents στον server για VAE decode
-    // Περιμένει το PNG response μέσω MQTT (blocking με CountDownLatch)
-    // Επιστρέφει Bitmap ή null αν timeout/error
+    // requestDecodeAndWait -- Sends latents to the server for VAE decode
+    // Waits for the PNG response over MQTT (blocking with CountDownLatch)
+    // Returns a Bitmap, or null on timeout/error
 
     private fun requestDecodeAndWait(
         latents: FloatArray, timeoutSec: Long = DECODE_TIMEOUT_SEC
@@ -516,8 +516,8 @@ class MainActivity : AppCompatActivity() {
         return pendingDecodeBitmap
     }
 
-    // initReusableBuffers — Δημιουργεί Direct NIO buffers μία φορά
-    // Direct buffers = zero-copy μεταφορά στο OnnxTensor (χωρίς extra copy)
+    // initReusableBuffers -- Creates the Direct NIO buffers once
+    // Direct buffers = zero-copy transfer to OnnxTensor (no extra copy)
 
     private fun initReusableBuffers() {
         sampleBuffer      = ByteBuffer.allocateDirect(LATENT_SIZE * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
@@ -526,8 +526,8 @@ class MainActivity : AppCompatActivity() {
         condEmbedBuffer   = ByteBuffer.allocateDirect(EMBED_SIZE * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
     }
 
-    // setupMqtt — Συνδέεται στο HiveMQ broker και ορίζει callbacks
-    // Τρέχει σε background thread (καλείται από onCreate)
+    // setupMqtt -- Connects to the HiveMQ broker and sets the callbacks
+    // Runs on a background thread (called from onCreate)
     // Subscriptions: embeddings_response, verify_response, verify_error, decoded
 
     private fun setupMqtt() {
@@ -538,7 +538,7 @@ class MainActivity : AppCompatActivity() {
                 MemoryPersistence()
             )
             mqttClient.setCallback(object : MqttCallback {
-                // Αν χαθεί η σύνδεση, προσπαθεί reconnect έως 5 φορές
+                // If the connection is lost, tries to reconnect up to 5 times
                 override fun connectionLost(cause: Throwable?) {
                     Log.w("MQTT", "Connection lost: ${cause?.message}")
                     if (cancelRequested) return
@@ -570,7 +570,7 @@ class MainActivity : AppCompatActivity() {
                     }.start()
                 }
 
-                // Router για εισερχόμενα MQTT messages
+                // Router for incoming MQTT messages
                 override fun messageArrived(topic: String?, message: MqttMessage?) {
                     val payload = message?.payload ?: return
                     when (topic) {
@@ -607,16 +607,16 @@ class MainActivity : AppCompatActivity() {
             mqttClient.subscribe("$sessionTopic/verify_response",     1)
             mqttClient.subscribe("$sessionTopic/verify_error",        1)
             mqttClient.subscribe("$sessionTopic/decoded",             1)
-            Log.d("MQTT", "✅ Connected to $brokerUrl")
+            Log.d("MQTT", "Connected to $brokerUrl")
         } catch (e: Exception) {
             Log.e("MQTT", "setup error: ${e.message}", e)
             updateStatus("MQTT Error — check network", StatusType.ERROR)
         }
     }
 
-    // parseDecodedResponse — Αποκωδικοποιεί PNG response από server
+    // parseDecodedResponse -- Decodes the PNG response from the server
     // Protocol: [4 bytes req_id] [PNG bytes]
-    // Αποθηκεύει το Bitmap και κάνει countDown στο decodeLatch
+    // Stores the Bitmap and counts down decodeLatch
 
     private fun parseDecodedResponse(payload: ByteArray) {
         val buf    = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
@@ -638,23 +638,23 @@ class MainActivity : AppCompatActivity() {
         decodeLatch?.countDown()
     }
 
-    // runUnetInference — Ένα forward pass του draft ONNX UNet
-    // Εκτελεί δύο passes (uncond + cond) και εφαρμόζει CFG
+    // runUnetInference -- One forward pass of the draft ONNX UNet
+    // Runs two passes (uncond + cond) and applies CFG
     //
-    // Σημείωση: σχεδόν διπλό χρόνο σε σχέση με single-pass λόγω CFG
-    // Εναλλακτικά: batched [uncond, cond] αλλά χρειάζεται περισσότερη RAM
+    // Note: nearly double the time versus a single pass because of CFG
+    // Alternative: a batched [uncond, cond] pass, but it needs more RAM
 
     private fun runUnetInference(
         latents: FloatArray, stepIdx: Int, scheduler: EulerScheduler
     ): FloatArray {
         val t0    = if (BuildConfig.DEBUG) System.currentTimeMillis() else 0L
 
-        // Scaling: x_scaled = x / sqrt(sigma^2 + 1) — απαιτείται από Euler scheduler
+        // Scaling: x_scaled = x / sqrt(sigma^2 + 1) -- required by the Euler scheduler
         val sigma = scheduler.getSigma(stepIdx)
         val scale = Math.sqrt((sigma * sigma + 1.0).toDouble()).toFloat()
         for (i in latents.indices) scaledLatentsBuffer[i] = latents[i] / scale
 
-        // Γέμισε τα reusable buffers
+        // Fill the reusable buffers
         sampleBuffer.clear();   sampleBuffer.put(scaledLatentsBuffer);  sampleBuffer.rewind()
         timestepBuffer.clear(); timestepBuffer.put(scheduler.getTimestep(stepIdx).toFloat()); timestepBuffer.rewind()
 
@@ -663,7 +663,7 @@ class MainActivity : AppCompatActivity() {
         val timestepTen = OnnxTensor.createTensor(ortEnv, timestepBuffer, longArrayOf(1))
 
         try {
-            // Pass 1: Unconditional (χωρίς text conditioning)
+            // Pass 1: Unconditional (no text conditioning)
             uncondEmbedBuffer.rewind()
             val uncondTen = OnnxTensor.createTensor(ortEnv, uncondEmbedBuffer, longArrayOf(1, 77, 768))
             try {
@@ -672,7 +672,7 @@ class MainActivity : AppCompatActivity() {
                     ?.use { (it.get(0) as OnnxTensor).floatBuffer.get(noiseUncondBuffer) }
             } finally { uncondTen.close() }
 
-            // Pass 2: Conditional (με text conditioning)
+            // Pass 2: Conditional (with text conditioning)
             condEmbedBuffer.rewind()
             val condTen = OnnxTensor.createTensor(ortEnv, condEmbedBuffer, longArrayOf(1, 77, 768))
             try {
@@ -692,9 +692,9 @@ class MainActivity : AppCompatActivity() {
         return finalNoiseBuffer
     }
 
-    // parseEmbeddingsResponse — Λαμβάνει CLIP embeddings από server
+    // parseEmbeddingsResponse -- Receives CLIP embeddings from the server
     // Protocol: [4 req_id][4 batch][4 tokens][4 dim][floats...]
-    // Αποθηκεύει [uncond, cond] στους αντίστοιχους buffers
+    // Stores [uncond, cond] in the corresponding buffers
 
     private fun parseEmbeddingsResponse(payload: ByteArray) {
         val buf        = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
@@ -707,17 +707,17 @@ class MainActivity : AppCompatActivity() {
             Log.e("SPEC", "Bad embeddings shape ($b,$t,$d)"); return
         }
         val embSize = t * d
-        // Server στέλνει: [uncond_emb (77×768), cond_emb (77×768)]
+        // The server sends: [uncond_emb (77x768), cond_emb (77x768)]
         val uncond = FloatArray(embSize) { buf.float }
         val cond   = FloatArray(embSize) { buf.float }
         uncondEmbedBuffer.clear(); uncondEmbedBuffer.put(uncond); uncondEmbedBuffer.rewind()
         condEmbedBuffer.clear();   condEmbedBuffer.put(cond);     condEmbedBuffer.rewind()
-        pendingEmbeddingsId = -1  // Αποτρέπει επεξεργασία stale response
+        pendingEmbeddingsId = -1  // Prevents processing a stale response
         embeddingsReady     = true
         embeddingsLatch.countDown()
     }
 
-    // parseVerifyResponse — Λαμβάνει verification result από server
+    // parseVerifyResponse -- Receives the verification result from the server
     // Protocol: [4 req_id][4 nAccepted][4 c][4 h][4 w][floats state]
     //           [4 n][n floats cos_sims][4 n][n floats rel_l2_x]
     //           [4 n][n floats rel_l2_eps]
@@ -739,9 +739,9 @@ class MainActivity : AppCompatActivity() {
         verifyLatch?.countDown()
     }
 
-    // readMetricBlock — Helper για ανάγνωση metric array από ByteBuffer
+    // readMetricBlock -- Helper for reading a metric array from a ByteBuffer
     // Format: [4 bytes length][length * 4 bytes floats]
-    // Επιστρέφει null αν δεν υπάρχουν αρκετά bytes
+    // Returns null if there are not enough bytes
 
     private fun readMetricBlock(buf: ByteBuffer): FloatArray? {
         if (buf.remaining() < 4) return null
@@ -750,9 +750,9 @@ class MainActivity : AppCompatActivity() {
         return FloatArray(n) { buf.float }
     }
 
-    // encodeVerifyRequest — Κωδικοποιεί verify request σε binary
-    // Πρέπει να ταιριάζει ακριβώς με parse_verify_request()
-    // του server (server_speculative.py)
+    // encodeVerifyRequest -- Encodes the verify request to binary
+    // Must match exactly parse_verify_request()
+    // on the server (server_speculative.py)
     //
     // Format: [4 req_id][2+N prompt][2+N neg][4 stepIdx][4 K][4 totalSteps]
     //         [4 cfg][4 threshold][8 seed][4 c][4 h][4 w][states floats]
@@ -779,8 +779,8 @@ class MainActivity : AppCompatActivity() {
         return buf.array()
     }
 
-    // encodeEmbeddingsRequest — Κωδικοποιεί embeddings request
-    // Πρέπει να ταιριάζει με _handle_embeddings() του server
+    // encodeEmbeddingsRequest -- Encodes the embeddings request
+    // Must match _handle_embeddings() on the server
     //
     // Format: [4 req_id][2+N prompt][2+N neg][2+N model_id]
 
@@ -797,8 +797,8 @@ class MainActivity : AppCompatActivity() {
         return buf.array()
     }
 
-    // encodeDecodeRequest — Κωδικοποιεί decode request (latents → PNG)
-    // Πρέπει να ταιριάζει με parse_decode_request() του server
+    // encodeDecodeRequest -- Encodes the decode request (latents -> PNG)
+    // Must match parse_decode_request() on the server
     //
     // Format: [4 req_id][4 c][4 h][4 w][latents floats]
 
@@ -810,27 +810,27 @@ class MainActivity : AppCompatActivity() {
         return buf.array()
     }
 
-    // createRandomLatents — Δημιουργεί αρχικό Gaussian noise
-    // Scaled με initNoiseSigma όπως απαιτεί ο Euler scheduler
-    // Fixed seed για αναπαραγωγιμότητα αποτελεσμάτων
+    // createRandomLatents -- Creates the initial Gaussian noise
+    // Scaled by initNoiseSigma as required by the Euler scheduler
+    // Fixed seed for reproducible results
 
     private fun createRandomLatents(scheduler: EulerScheduler): FloatArray {
         val random = java.util.Random(SEED)
         return FloatArray(LATENT_SIZE) { random.nextGaussian().toFloat() * scheduler.initNoiseSigma }
     }
 
-    // loadUnetModel — Φορτώνει το ONNX model και κάνει warmup
+    // loadUnetModel -- Loads the ONNX model and runs a warmup
     //
     // SessionOptions:
     //   - 4 threads
     //   - ALL_OPT
     //
-    // Warmup: dummy forward pass για JIT compilation πριν το πρώτο verify
-    // Χωρίς warmup, η πρώτη inference παίρνει 30-60s ή κρασάρει
+    // Warmup: dummy forward pass for JIT compilation before the first verify
+    // Without warmup, the first inference takes 30-60s or crashes
 
     private fun loadUnetModel(path: String) {
         // Try NNAPI first (offloads supported ops to device NPU/GPU/DSP if present).
-        // ORT partitions the graph automatically — unsupported ops fall back to CPU.
+        // ORT partitions the graph automatically -- unsupported ops fall back to CPU.
         // NNAPI support/perf varies a lot by device, so if session creation fails
         // for any reason we retry CPU-only rather than crashing generation.
         unetSession = try {
@@ -890,9 +890,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // copyAssetToInternal — Αντιγράφει asset στο internal storage
-    // Απαραίτητο γιατί το ORT δεν μπορεί να διαβάσει απευθείας από assets
-    // Αν το αρχείο υπάρχει ήδη, παραλείπει την αντιγραφή
+    // copyAssetToInternal -- Copies an asset to internal storage
+    // Required because ORT cannot read directly from assets
+    // If the file already exists, it skips the copy
 
     private fun copyAssetToInternal(f: String): String {
         val file = File(filesDir, f)
@@ -900,8 +900,8 @@ class MainActivity : AppCompatActivity() {
         return file.absolutePath
     }
 
-    // onDestroy — Καθαρισμός resources όταν κλείσει η εφαρμογή
-    // Σειρά: cancel → interrupt thread → disconnect MQTT → close ORT
+    // onDestroy -- Cleans up resources when the application closes
+    // Order: cancel -> interrupt thread -> disconnect MQTT -> close ORT
 
     override fun onDestroy() {
         super.onDestroy()
