@@ -3,9 +3,10 @@
 Adapting speculative decoding to latent diffusion: a lightweight draft model runs on-device (Android) while the target model runs in the cloud, coordinated over MQTT.
 
 Diploma thesis - School of Applied Mathematical and Physical Sciences, National Technical University of Athens (NTUA).
-The thesis document (Diploma Thesis.pdf) is © Chloi Christou, all rights reserved.
+The thesis document (Diploma_Thesis.pdf) is © Chloi Christou, all rights reserved.
 
 **Author:** Chloi Christou · **Supervisor:** Prof. Iakovos Venieris
+**[Read the full thesis (PDF)](Diploma_Thesis.pdf)**
 
 ---
 
