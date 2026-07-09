@@ -1,19 +1,18 @@
-%%writefile export_onnx_bksdm_fp16.py
 """
 export_onnx_bksdm_fp16.py
 -------------------------
-Εξαγωγή BK-SDM-tiny UNet σε ONNX fp16 για Android ORT.
+Export the BK-SDM-tiny UNet to ONNX fp16 for Android ORT.
 
-Γιατί όχι onnxconverter_common keep_io_types=True:
-  Προκαλεί type mismatch στο time_proj/Mul:
-  (fp32 timestep input) × (fp16 weight) → error.
+Why not onnxconverter_common keep_io_types=True:
+  It causes a type mismatch at time_proj/Mul:
+  (fp32 timestep input) x (fp16 weight) -> error.
 
-Λύση: PyTorch fp16 wrapper που κάνει cast εσωτερικά.
-  - Android στέλνει fp32 (δεν αλλάζει τίποτα στο MainActivity.kt)
-  - Εσωτερικά τρέχει fp16
-  - Output επιστρέφει fp32
+Solution: a PyTorch fp16 wrapper that casts internally.
+  - Android sends fp32 (nothing changes in MainActivity.kt)
+  - Runs fp16 internally
+  - Returns fp32 output
 
-Pipeline: fp16 UNet → ONNX (fp32 interface, fp16 weights) → 617 MB
+Pipeline: fp16 UNet -> ONNX (fp32 interface, fp16 weights) -> 617 MB
 """
 
 import os
@@ -29,26 +28,26 @@ DRAFT_MODEL      = "nota-ai/bk-sdm-tiny"
 UNET_OUTPUT_PATH = "draft_unet.onnx"
 LATENT_SIZE      = 32
 
-# ── Καθαρισμός ───────────────────────────────────────────────────────────────
+# -- Cleanup -----------------------------------------------------------------
 for stale in [UNET_OUTPUT_PATH, UNET_OUTPUT_PATH + ".data"]:
     if os.path.exists(stale):
         os.remove(stale)
-        print(f"  🗑 {stale}")
+        print(f"  [rm] {stale}")
 
-# ─── [1/3] Φόρτωση UNet fp16 ─────────────────────────────────────────────────
-print(f"[1/3] Φόρτωση {DRAFT_MODEL} (fp16)...")
+# --- [1/3] Load UNet fp16 ---------------------------------------------------
+print(f"[1/3] Loading {DRAFT_MODEL} (fp16)...")
 unet_fp16 = UNet2DConditionModel.from_pretrained(
     DRAFT_MODEL, subfolder="unet", torch_dtype=torch.float16
 ).eval()
 
 params_m = sum(p.numel() for p in unet_fp16.parameters()) / 1e6
-print(f"  ✓ UNet params: ~{params_m:.0f}M")
+print(f"  [ok] UNet params: ~{params_m:.0f}M")
 
 class UNetFp16Wrapper(torch.nn.Module):
     """
-    Wrapper που κρατά fp32 interface αλλά τρέχει fp16 εσωτερικά.
-    Έτσι το Android δεν χρειάζεται καμία αλλαγή — στέλνει fp32,
-    παίρνει fp32, ενώ το inference γίνεται σε fp16 (μισή RAM).
+    Wrapper that keeps an fp32 interface but runs fp16 internally.
+    This way Android needs no changes -- it sends fp32 and receives
+    fp32, while inference runs in fp16 (half the RAM).
     """
     def __init__(self, unet):
         super().__init__()
@@ -57,20 +56,20 @@ class UNetFp16Wrapper(torch.nn.Module):
     def forward(self, sample, timestep, encoder_hidden_states):
         out = self.unet(
             sample.to(torch.float16),
-            timestep,                                      # timestep: fp32 → UNet το διαχειρίζεται
+            timestep,                                      # timestep: fp32 -> handled by the UNet
             encoder_hidden_states=encoder_hidden_states.to(torch.float16)
         )[0]
-        return out.to(torch.float32)                       # fp32 output για Android
+        return out.to(torch.float32)                       # fp32 output for Android
 
 wrapper = UNetFp16Wrapper(unet_fp16)
 
-# Dummy inputs fp32 (ίδια με Android)
+# Dummy inputs fp32 (same as Android)
 dummy_latents  = torch.randn(1, 4, LATENT_SIZE, LATENT_SIZE, dtype=torch.float32)
 dummy_timestep = torch.tensor([1.0], dtype=torch.float32)
 dummy_encoder  = torch.randn(1, 77, 768, dtype=torch.float32)
 
-# ─── [2/3] Export ONNX ───────────────────────────────────────────────────────
-print(f"[2/3] Export UNet fp16 → ONNX...")
+# --- [2/3] Export ONNX ------------------------------------------------------
+print(f"[2/3] Exporting UNet fp16 -> ONNX...")
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     with torch.no_grad():
@@ -96,9 +95,9 @@ if os.path.exists(UNET_OUTPUT_PATH + ".data"):
     os.remove(UNET_OUTPUT_PATH + ".data")
 
 fp16_mb = os.path.getsize(UNET_OUTPUT_PATH) / (1024**2)
-print(f"  ✓ fp16: {fp16_mb:.0f} MB")
+print(f"  [ok] fp16: {fp16_mb:.0f} MB")
 
-# ─── [3/3] Validation ────────────────────────────────────────────────────────
+# --- [3/3] Validation -------------------------------------------------------
 print(f"[3/3] Validation (rel_l2)...")
 
 graph_nodes = [n.op_type for n in onnx.load(UNET_OUTPUT_PATH).graph.node]
@@ -110,7 +109,7 @@ session = ort.InferenceSession(
     providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
 )
 
-# fp32 UNet για ground truth
+# fp32 UNet for ground truth
 unet_fp32 = UNet2DConditionModel.from_pretrained(
     DRAFT_MODEL, subfolder="unet", torch_dtype=torch.float32
 ).eval()
@@ -173,23 +172,23 @@ for i, ts_idx in enumerate(val_ts):
     norm   = np.linalg.norm(pt_out.flatten())
     rel_l2 = float(np.linalg.norm(diff) / max(norm, 1e-8))
     rel_l2_list.append(rel_l2)
-    flag = "✓" if rel_l2 < 0.01 else ("⚠" if rel_l2 < 0.05 else "✗")
+    flag = "OK" if rel_l2 < 0.01 else ("WARN" if rel_l2 < 0.05 else "FAIL")
     print(f"  t={int(t):<8} {kind:<8} {rel_l2:.4f} {flag}")
 
 mean = float(np.mean(rel_l2_list))
 mx   = float(np.max(rel_l2_list))
 print(f"\n  mean={mean:.4f}  max={mx:.4f}  ", end="")
-if mean < 0.0020:   print("✓ EXCELLENT — σχεδόν fp32 ακρίβεια")
-elif mean < 0.01: print("✓ VERY GOOD")
-elif mean < 0.02: print("✓ OK")
-else:             print("⚠ HIGH — απροσδόκητο για fp16")
+if mean < 0.0020:   print("EXCELLENT -- near-fp32 accuracy")
+elif mean < 0.01: print("VERY GOOD")
+elif mean < 0.02: print("OK")
+else:             print("HIGH -- unexpected for fp16")
 
 print()
-print("══════════════════════════════════════════")
-print(f"  Μοντέλο:    {DRAFT_MODEL}")
-print(f"  Αρχείο:     {UNET_OUTPUT_PATH}  ({fp16_mb:.0f} MB, single file)")
-print(f"  Interface:  fp32 inputs/outputs (Android ✓ — χωρίς αλλαγές)")
-print(f"  Weights:    fp16 (εσωτερικά)")
+print("==========================================")
+print(f"  Model:      {DRAFT_MODEL}")
+print(f"  File:       {UNET_OUTPUT_PATH}  ({fp16_mb:.0f} MB, single file)")
+print(f"  Interface:  fp32 inputs/outputs (Android ok -- no changes)")
+print(f"  Weights:    fp16 (internal)")
 print(f"  rel_l2: mean={mean:.4f}  max={mx:.4f}")
 print()
-print("  → app/src/main/assets/draft_unet.onnx")
+print("  -> app/src/main/assets/draft_unet.onnx")
